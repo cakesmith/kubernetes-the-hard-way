@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+tfplan
+.terraform.lock.hcl
+
+*.s3.tfbackend
+project.awsconfig
