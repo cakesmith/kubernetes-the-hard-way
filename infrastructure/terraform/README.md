@@ -131,11 +131,19 @@ The lab configuration creates an account-wide $50 monthly AWS cost budget with a
 
 ## 4. Connect and install Kubernetes
 
-Allow time for cloud-init to install SSM Agent, nftables and HAProxy. From this directory on your workstation, connect as Debian's `admin` user through Session Manager:
+Allow time for cloud-init to install SSM Agent, nftables and HAProxy. Run the following commands from the repository root on your workstation.
+
+If your lab profiles are in `infrastructure/terraform/project.awsconfig`, select that file in the terminal you will use to connect. Run the export again in each new terminal that needs those profiles. If Terraform reports `failed to get shared config profile, kthw-provisioner`, check that your terminal is using the AWS config file that defines that profile.
 
 ```sh
-region=$(terraform output -raw lab_region)
-jumpbox=$(terraform output -raw jumpbox_instance_id)
+export AWS_CONFIG_FILE="$PWD/infrastructure/terraform/project.awsconfig"
+```
+
+Connect as Debian's `admin` user through Session Manager.
+
+```sh
+region=$(terraform -chdir=infrastructure/terraform output -raw lab_region) &&
+jumpbox=$(terraform -chdir=infrastructure/terraform output -raw jumpbox_instance_id) &&
 ssh -A -i "$HOME/.ssh/kthw_ed25519" \
   -o "ProxyCommand=aws --profile kthw-instance-access --region $region ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
   "admin@$jumpbox"
@@ -143,7 +151,32 @@ ssh -A -i "$HOME/.ssh/kthw_ed25519" \
 
 On the jumpbox, check `sudo cloud-init status --wait` and `sudo systemctl is-active nftables haproxy amazon-ssm-agent`. For boot errors, inspect `sudo less /var/log/cloud-init-output.log`.
 
-Use the [manual jumpbox setup](../../docs/02-jumpbox.md), then copy the workstation's `terraform output -raw machines_txt` into the tutorial's `machines.txt` on the jumpbox. Initially SSH from the jumpbox to the nodes as `admin`, then use the tutorial's [SSH setup](../../docs/03-compute-resources.md#configuring-ssh-access) to configure root access. The [AWS worker CNI instructions](../../docs/09-bootstrapping-kubernetes-workers.md) and [pod routing instructions](../../docs/11-pod-network-routes.md) preserve pod IPs between workers. Complete the [AWS NodePort smoke test](../../docs/12-smoke-test.md#services) to expose an HTTP backend on TCP 30080.
+Use the [manual jumpbox setup](../../docs/02-jumpbox.md), then run `terraform -chdir=infrastructure/terraform output -raw machines_txt` from the repository root on your workstation and copy the output into the tutorial's `machines.txt` on the jumpbox. Initially SSH from the jumpbox to the nodes as `admin`, then use the tutorial's [SSH setup](../../docs/03-compute-resources.md#configuring-ssh-access) to configure root access. The [AWS worker CNI instructions](../../docs/09-bootstrapping-kubernetes-workers.md) and [pod routing instructions](../../docs/11-pod-network-routes.md) preserve pod IPs between workers. Complete the [AWS NodePort smoke test](../../docs/12-smoke-test.md#services) to expose an HTTP backend on TCP 30080.
+
+### Set up SSH aliases
+
+From the repository root on your workstation, print a `Host jumpbox` entry using the Terraform outputs and the AWS config file selected in your terminal.
+
+```sh
+region=$(terraform -chdir=infrastructure/terraform output -raw lab_region) &&
+jumpbox=$(terraform -chdir=infrastructure/terraform output -raw jumpbox_instance_id) &&
+cat <<EOF
+Host jumpbox
+    HostName $jumpbox
+    User admin
+    IdentityFile ~/.ssh/kthw_ed25519
+    ForwardAgent yes
+    ProxyCommand env AWS_CONFIG_FILE="${AWS_CONFIG_FILE:-$HOME/.aws/config}" aws --profile kthw-instance-access --region $region ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p
+EOF
+```
+
+Paste the output into `~/.ssh/config` above any `Host *` block. Run this one-liner once to append the three private-node entries. If an earlier `Host *` block sets options such as `User` or `ProxyJump`, move the new entries above it.
+
+```sh
+machines=$(terraform -chdir=infrastructure/terraform output -raw machines_txt) && printf '%s\n' "$machines" | awk 'NF >= 3 {printf "\nHost %s\n    HostName %s\n    User admin\n    IdentityFile ~/.ssh/kthw_ed25519\n    ProxyJump jumpbox\n", $3, $1}' >> "$HOME/.ssh/config"
+```
+
+Connect from any directory with `ssh jumpbox`, `ssh server`, `ssh node-0`, or `ssh node-1`. The private-node entries connect as `admin` through the jumpbox. For the tutorial's `root` SSH steps, use the jumpbox's own key as described in the [private-node SSH setup](../../docs/03-compute-resources.md#aws-infrastructure-add-on-ssh-to-private-nodes). If Terraform replaces an instance, refresh its entry with the new instance ID or private IP.
 
 ## Use an existing deployment
 
@@ -183,10 +216,10 @@ Run these commands from the repository root.
 
 | Command | Effect |
 | --- | --- |
-| `make up` | Plans and applies changes, guards against instance or EBS deletion, then ensures the lab is running. |
+| `make up` | Plans and applies changes, guards against instance or EBS deletion, then uses the same startup sequence as `make start`. |
 | `make status` | Shows instance states, private IPs and the current jumpbox public IPv4 address. |
 | `make stop` | Stops workers, then the control plane, then the jumpbox. |
-| `make start` | Starts the jumpbox and waits for EC2 checks, then starts the control plane and workers. |
+| `make start` | Starts stopped instances in one EC2 request, then waits for all instances to reach `running` and pass their EC2 system, instance, and attached EBS checks. |
 | `make destroy` | Prompts before destroying the lab and deleting its root volumes. Retains the bootstrap. |
 
 Power commands use IDs, region and account from Terraform outputs and check the caller's account. They leave the Terraform resource configuration and network targets intact. The subnet controls public IPv4 assignment so the provider can refresh the transient association without planning to replace the jumpbox. EC2 health checks do not guarantee that systemd, SSM, or Kubernetes is ready. Keep lifecycle operations sequential and use the validation commands below to check readiness.

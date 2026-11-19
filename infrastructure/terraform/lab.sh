@@ -94,6 +94,24 @@ set_power() {
   aws_lab ec2 wait "instance-$target" --instance-ids "$@"
 }
 
+wait_for_health() {
+  local attempt healthy
+  echo "Waiting for EC2 status checks on all lab instances..." >&2
+  for ((attempt = 1; attempt <= 40; attempt++)); do
+    healthy=$(aws_lab ec2 describe-instance-status --instance-ids "$@" \
+      --query "length(InstanceStatuses[?SystemStatus.Status == 'ok' && InstanceStatus.Status == 'ok' && (AttachedEbsStatus.Status == 'ok' || AttachedEbsStatus.Status == 'not-applicable')])" \
+      --output json)
+    if [[ "$healthy" == "$#" ]]; then
+      return 0
+    fi
+    if (( attempt < 40 )); then
+      sleep 15
+    fi
+  done
+  echo "Timed out waiting for EC2 status checks ($healthy of $# instances passed)." >&2
+  return 1
+}
+
 case "$action" in
   stop)
     set_power stopped "${workers[@]}"
@@ -101,10 +119,8 @@ case "$action" in
     set_power stopped "$jumpbox"
     ;;
   start)
-    set_power running "$jumpbox"
-    aws_lab ec2 wait instance-status-ok --instance-ids "$jumpbox"
-    set_power running "$server"
-    set_power running "${workers[@]}"
+    set_power running "${ids[@]}"
+    wait_for_health "${ids[@]}"
     ;;
   status-json)
     aws_lab ec2 describe-instances --instance-ids "${ids[@]}" \

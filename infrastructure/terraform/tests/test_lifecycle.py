@@ -26,12 +26,18 @@ elif args[1] in ("start-instances", "stop-instances"):
     for instance in args[3:]:
         state[instance] = "running" if args[1] == "start-instances" else "stopped"
     path.write_text(json.dumps(state))
-elif args[1] == "wait":
-    if args[2] == "instance-status-ok":
-        assert state[args[4]] == "running"
+elif args[1] == "describe-instance-status":
+    ids = args[3:args.index("--query")]
+    assert all(state[instance] == "running" for instance in ids)
+    initializing = path.with_name("initializing")
+    if initializing.exists():
+        initializing.unlink()
+        print(len(ids) - 1)
     else:
-        for instance in args[4:]:
-            assert state[instance] == args[2].removeprefix("instance-")
+        print(len(ids))
+elif args[1] == "wait":
+    for instance in args[4:]:
+        assert state[instance] == args[2].removeprefix("instance-")
 """
 
 
@@ -76,14 +82,16 @@ elif command == "show":
         self.assertEqual(result.returncode, expected, result.stderr)
         return result
 
-    def power_calls(self, action):
-        commands = [json.loads(line) for line in (self.path / "calls").read_text().splitlines()]
-        return [args[3:] for args in commands if args[:2] == ["ec2", f"{action}-instances"]]
+    def aws_calls(self):
+        return [json.loads(line) for line in (self.path / "calls").read_text().splitlines()]
 
-    def test_start_and_stop_are_ordered_and_idempotent(self):
+    def power_calls(self, action):
+        return [args[3:] for args in self.aws_calls() if args[:2] == ["ec2", f"{action}-instances"]]
+
+    def test_start_is_batched_and_stop_is_ordered_with_idempotent_retries(self):
         self.lab("start")
         self.lab("start")
-        self.assertEqual(self.power_calls("start"), [["i-01"], ["i-02"], ["i-03", "i-04"]])
+        self.assertEqual(self.power_calls("start"), [list(IDS.values())])
         self.lab("stop")
         self.lab("stop")
         self.assertEqual(self.power_calls("stop"), [["i-03", "i-04"], ["i-02"], ["i-01"]])
@@ -97,6 +105,16 @@ elif command == "show":
         self.env["TEST_ACCOUNT"] = "999999999999"
         self.assertIn("Account mismatch", self.lab("stop", expected=1).stderr)
         self.assertEqual(len((self.path / "calls").read_text().splitlines()), 1)
+
+    def test_start_waits_for_every_instance_to_pass_health_checks(self):
+        (self.path / "initializing").touch()
+        self.fake("sleep", 'import sys\nassert sys.argv[1:] == ["15"]')
+        self.lab("start")
+        commands = self.aws_calls()
+        polls = [args[3:args.index("--query")] for args in commands
+                 if args[:2] == ["ec2", "describe-instance-status"]]
+        self.assertEqual(polls, [list(IDS.values())] * 2)
+        self.assertEqual(commands[-2][:2], ["ec2", "describe-instance-status"])
 
     def test_up_rejects_replacement_before_apply(self):
         self.env["TEST_PLAN"] = json.dumps({"resource_changes": [{
@@ -117,7 +135,7 @@ elif command == "show":
         self.lab("up")
         self.assertEqual((self.path / "terraform_calls").read_text().splitlines(),
                          ["init", "plan", "show", "apply", "output"])
-        self.assertEqual(self.power_calls("start"), [["i-01"], ["i-02"], ["i-03", "i-04"]])
+        self.assertEqual(self.power_calls("start"), [list(IDS.values())])
 
 
 if __name__ == "__main__":
