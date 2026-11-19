@@ -10,6 +10,8 @@ Each kubeconfig requires a Kubernetes API Server to connect to.
 
 You should be able to ping `server.kubernetes.local` based on the `/etc/hosts` DNS entry from a previous lab.
 
+**AWS infrastructure add-on.** The `/etc/hosts` entry from the compute setup resolves `server.kubernetes.local`. Use the API request below to verify TCP and TLS connectivity because the AWS security groups do not allow ping.
+
 ```bash
 curl --cacert ca.crt \
   https://server.kubernetes.local:6443/version

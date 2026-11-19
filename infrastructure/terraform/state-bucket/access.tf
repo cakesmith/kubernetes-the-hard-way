@@ -74,8 +74,7 @@ resource "aws_iam_role_policy" "provisioner" {
           "ec2:AuthorizeSecurityGroupIngress", "ec2:AuthorizeSecurityGroupEgress",
           "ec2:RevokeSecurityGroupIngress", "ec2:RevokeSecurityGroupEgress",
           "ec2:ImportKeyPair", "ec2:DeleteKeyPair",
-          "ec2:RunInstances", "ec2:TerminateInstances", "ec2:StopInstances",
-          "ec2:StartInstances", "ec2:ModifyInstanceAttribute",
+          "ec2:RunInstances", "ec2:ModifyInstanceAttribute",
           "ec2:ModifyInstanceMetadataOptions", "ec2:ModifyInstanceCreditSpecification",
           "ec2:ModifyNetworkInterfaceAttribute", "ec2:ModifyVolume",
           "ec2:CreateTags", "ec2:DeleteTags",
@@ -84,6 +83,21 @@ resource "aws_iam_role_policy" "provisioner" {
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:RequestedRegion" = var.lab_region } }
+      },
+      {
+        Sid      = "ManageLabInstancePowerAndTermination"
+        Effect   = "Allow"
+        Action   = ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances"]
+        Resource = "${local.lab_ec2_arn}:instance/*"
+        Condition = {
+          StringEquals = { "ec2:ResourceTag/ManagedBy" = "kubernetes-hard-way" }
+        }
+      },
+      {
+        Sid      = "ManageAccountBudget"
+        Effect   = "Allow"
+        Action   = ["budgets:ViewBudget", "budgets:ModifyBudget", "budgets:TagResource", "budgets:UntagResource", "budgets:ListTagsForResource", "aws-portal:ViewBilling", "aws-portal:ModifyBilling"]
+        Resource = "*"
       },
       {
         Effect   = "Allow"
@@ -110,9 +124,23 @@ resource "aws_iam_role" "jumpbox" {
   tags = { Name = "kubernetes-hard-way-jumpbox", ResourceType = "iam-role" }
 }
 
-resource "aws_iam_role_policy_attachment" "jumpbox" {
-  role       = aws_iam_role.jumpbox.name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+resource "aws_iam_role_policy" "jumpbox" {
+  name = "session-manager-agent"
+  role = aws_iam_role.jumpbox.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssm:UpdateInstanceInformation",
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+      ]
+      Resource = "*"
+    }]
+  })
 }
 
 resource "aws_iam_instance_profile" "jumpbox" {

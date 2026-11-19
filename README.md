@@ -24,11 +24,26 @@ Component versions:
 * [cni](https://github.com/containernetworking/cni) v1.6.x
 * [etcd](https://github.com/etcd-io/etcd) v3.6.x
 
+## AWS infrastructure add-on
+
+Terraform provisions a public jumpbox and three private Kubernetes machines. Follow the [AWS setup guide](infrastructure/terraform/README.md) to configure the AWS profiles, Terraform backend, and SSH key. Then run these commands from the repository root.
+
+| Command | What it does |
+| --- | --- |
+| `make up` | Provisions or updates the AWS lab and starts the instances. Continue with the manual Kubernetes installation below. |
+| `make status` | Shows instance states, private IPs, and the current jumpbox public IP. |
+| `make stop` | Stops all four instances and preserves Kubernetes data on EBS. EBS storage still incurs charges. |
+| `make start` | Restarts the stopped instances with the same private IPs and disks. |
+| `make destroy` | Prompts before deleting the lab and its root disks. Retains the bootstrap account, state bucket, and IAM roles. |
+| `make validate` | Runs local Terraform checks and mocked lifecycle tests after provider initialization. |
+| `make validate-live` | Checks connectivity and ingress after manual installation and the smoke test. |
+| `make validate-recovery` | Stops and restarts the lab to verify connectivity, persistent data, and Terraform state. |
+
+See the [validation prerequisites](infrastructure/terraform/README.md#validation) before running the live checks.
+
 ## Labs
 
 This tutorial requires four (4) ARM64 or AMD64 based virtual or physical machines connected to the same network.
-
-To provision the lab on AWS, see the [Terraform bootstrap and deployment guide](infrastructure/terraform/README.md).
 
 * [Prerequisites](docs/01-prerequisites.md)
 * [Setting up the Jumpbox](docs/02-jumpbox.md)

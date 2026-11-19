@@ -26,9 +26,29 @@ XXX.XXX.XXX.XXX node-1.kubernetes.local node-1 10.200.1.0/24
 
 Now it's your turn to create a `machines.txt` file with the details for the three machines you will be using to create your Kubernetes cluster. Use the example machine database from above and add the details for your machines.
 
+**AWS infrastructure add-on.** Use `terraform output -raw machines_txt` on your workstation and copy its output to the tutorial directory on the jumpbox.
+
 ## Configuring SSH Access
 
 SSH will be used to configure the machines in the cluster. Verify that you have `root` SSH access to each machine listed in your machine database. You may need to enable root SSH access on each node by updating the sshd_config file and restarting the SSH server.
+
+### AWS infrastructure add-on: SSH to private nodes
+
+The AWS key pair grants initial access to Debian's `admin` user. From the jumpbox root shell with the forwarded agent, install a separate jumpbox key for the tutorial's root SSH commands:
+
+```bash
+test -f /root/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519
+while read -r IP FQDN HOST SUBNET; do
+  ssh "admin@$IP" 'sudo install -d -m 0700 /root/.ssh &&
+    sudo sh -c '"'"'umask 077; touch /root/.ssh/authorized_keys
+    IFS= read -r key
+    grep -qxF "$key" /root/.ssh/authorized_keys || printf "%s\n" "$key" >> /root/.ssh/authorized_keys'"'" \
+    < /root/.ssh/id_ed25519.pub
+  ssh -n "root@$IP" true
+done < machines.txt
+```
+
+Debian permits root login with a key when `PermitRootLogin prohibit-password` applies and the key is in `/root/.ssh/authorized_keys`. If verification fails, check the effective SSH daemon configuration as `admin`. Continue to [Hostnames](#hostnames) once root SSH works.
 
 ### Enable root SSH Access
 

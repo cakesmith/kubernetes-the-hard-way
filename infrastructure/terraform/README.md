@@ -1,140 +1,268 @@
 # Kubernetes The Hard Way on AWS
 
-Terraform provisions the AWS infrastructure for the tutorial. The project account, state bucket, and IAM roles stay in place between lab runs. The lab itself is disposable.
+Start here if you've just cloned the repository and want to run the tutorial on AWS. Terraform creates four Debian 12 EC2 instances and their network. You still install and configure Kubernetes by hand.
 
-## What exists today
+The setup has three parts. `project-account/` creates a long-lived AWS Organizations member account. `state-bucket/` creates the bucket and roles inside that account. The Terraform configuration in this directory creates the lab. You can tear down the lab between sessions and keep the account, bucket, and roles for next time.
 
-| Setting | Value |
-| --- | --- |
-| Organizations management account | `637423194439` (`cakesmith`) |
-| Project member account | `476564946996` (`Kubernetes The Hard Way`) |
-| AWS Region | `us-east-1` |
-| Bootstrap caller | `arn:aws:iam::637423194439:user/nick-admin` via AWS CLI profile `default` |
-| State bucket | `kubernetes-hard-way-476564946996-tfstate` |
-| State object | `kubernetes-hard-way/terraform.tfstate` |
-| S3 lock object | `kubernetes-hard-way/terraform.tfstate.tflock` |
+If your team already created a project account for this checkout, stop before step 1 and see [Use an existing deployment](#use-an-existing-deployment).
 
-The account and bootstrap were applied on November 19, 2026, using Terraform 1.10.5 and AWS provider 5.100.0. Both project roles were assumed successfully. Terraform initialized the S3 backend and produced a 14-resource lab plan using a temporary test public key. S3 rejected the SSH role's attempt to list the state bucket. The lab plan was never applied, so there are no lab EC2 instances and the SSH tunnel has yet to be tested against a running jumpbox.
+## Before you start
 
-## How the account was bootstrapped
+- Install Terraform 1.10 or later, GNU Make, Python 3, AWS CLI v2, and OpenSSH. Install the AWS CLI Session Manager plugin before connecting to the jumpbox.
+- Sign in with an AWS CLI profile that can create member accounts in the **AWS Organizations management account**. Administrator access in a member account alone is insufficient. This guide assumes an existing organization and uses `us-east-1`.
+- Have an email address you control that AWS has never registered to another account. Reusing the management account email returns `EMAIL_ALREADY_EXISTS`.
+- Know the IAM ARN of the user or role behind your admin login. You'll use it to let that principal assume the project's Terraform and SSH roles.
 
-Run commands from `infrastructure/terraform`. The commands in this section document the one-time setup. For the existing project, use the saved local state and continue to [Deploy the lab](#deploy-the-lab).
-
-### 1. Verify the management login and create the account
-
-The `default` AWS CLI profile authenticated as `nick-admin`. Terraform could not use its credentials directly, so the bootstrap used the CLI's `export-credentials` command to supply temporary credentials to Terraform. The helper passes credentials to the caller without storing them in Terraform variables.
+Run the commands below from `infrastructure/terraform`:
 
 ```sh
-aws --profile default sts get-caller-identity
-aws --profile default organizations describe-organization \
-  --query 'Organization.{ManagementAccountId:MasterAccountId,FeatureSet:FeatureSet}'
+cd infrastructure/terraform
 ```
 
-Use this entry in your normal AWS config to reproduce the helper used at bootstrap.
+## 1. Create the project account
+
+Use a separate CLI profile called `kthw-management` for the management login. Add this block to your normal AWS config (typically `~/.aws/config`). Replace `YOUR_ADMIN_PROFILE` with the name of your existing authenticated profile, such as `default`. This helper lets Terraform use the same temporary credentials as the AWS CLI.
 
 ```ini
 [profile kthw-management]
-credential_process = aws --profile default configure export-credentials --format process
+credential_process = aws --profile YOUR_ADMIN_PROFILE configure export-credentials --format process
 ```
 
-The member account was created by the [account configuration](project-account/main.tf). Set `PROJECT_ACCOUNT_EMAIL` to an unused email you control when reproducing this for a new member account. This project's email is recorded in the local, ignored `project-account/account.auto.tfvars`. AWS rejected the first attempt with `EMAIL_ALREADY_EXISTS` because that email belonged to the management account. The retry with the unused address succeeded.
+Verify the login. The `Account` from the first command should match the management account ID from the second.
+
+```sh
+aws --profile kthw-management sts get-caller-identity
+aws --profile kthw-management organizations describe-organization \
+  --query 'Organization.MasterAccountId' --output text
+```
+
+Create `project-account/account.auto.tfvars` with your management account ID and unused email:
+
+```hcl
+management_account_id = "YOUR_MANAGEMENT_ACCOUNT_ID"
+project_account_email = "YOUR_UNUSED_EMAIL"
+```
 
 ```sh
 AWS_PROFILE=kthw-management terraform -chdir=project-account init
-AWS_PROFILE=kthw-management terraform -chdir=project-account plan -out=tfplan \
-  -var='management_account_id=637423194439' \
-  -var="project_account_email=${PROJECT_ACCOUNT_EMAIL:?Set an unused AWS account email}"
+AWS_PROFILE=kthw-management terraform -chdir=project-account plan -out=tfplan
+```
+
+Review the plan. When it shows only the new member account, apply it and save the returned account ID.
+
+```sh
 AWS_PROFILE=kthw-management terraform -chdir=project-account apply tfplan
 terraform -chdir=project-account output -raw project_account_id
 ```
 
-AWS Organizations created `OrganizationAccountAccessRole` in the member account. The account resource has `prevent_destroy` enabled.
+The account has Terraform's `prevent_destroy` protection. Organizations creates the `OrganizationAccountAccessRole` used for the next step.
 
-### 2. Configure the project role profiles
+## 2. Set up the project roles and state bucket
 
-The deployed checkout has a local, ignored `project.awsconfig` with the following profiles. It uses `env -u AWS_CONFIG_FILE` in the credential helper to resolve `default` from your normal AWS config. Use the first helper example above if you put these profiles directly in your normal config instead. For a new project account, replace the role ARNs' account ID with the output from step 1.
+Add these profiles to the same AWS config. Replace every `PROJECT_ACCOUNT_ID` with the account ID from step 1.
 
 ```ini
-[profile kthw-management]
-credential_process = env -u AWS_CONFIG_FILE aws --profile default configure export-credentials --format process
-
 [profile kthw-bootstrap]
-role_arn = arn:aws:iam::476564946996:role/OrganizationAccountAccessRole
+role_arn = arn:aws:iam::PROJECT_ACCOUNT_ID:role/OrganizationAccountAccessRole
 source_profile = kthw-management
 
 [profile kthw-provisioner]
-role_arn = arn:aws:iam::476564946996:role/kubernetes-hard-way-provisioner
+role_arn = arn:aws:iam::PROJECT_ACCOUNT_ID:role/kubernetes-hard-way-provisioner
 source_profile = kthw-management
 
 [profile kthw-instance-access]
-role_arn = arn:aws:iam::476564946996:role/kubernetes-hard-way-instance-access
+role_arn = arn:aws:iam::PROJECT_ACCOUNT_ID:role/kubernetes-hard-way-instance-access
 source_profile = kthw-management
 ```
 
-```sh
-export AWS_CONFIG_FILE="$PWD/project.awsconfig"
-aws --profile kthw-bootstrap sts get-caller-identity
+| Profile | Use |
+| --- | --- |
+| `kthw-management` | Create the member account in AWS Organizations. |
+| `kthw-bootstrap` | Administer the member account and create the bucket and project roles. |
+| `kthw-provisioner` | Run Terraform for the lab. This is the profile used by both the S3 backend and the AWS provider. |
+| `kthw-instance-access` | Open an SSH tunnel to the jumpbox through Session Manager. |
+
+Create `state-bucket/account.auto.tfvars` with the same member account ID, a globally unique S3 bucket name, and your management IAM principal ARN. Use the IAM ARN beginning with `arn:aws:iam::`. If `get-caller-identity` showed an assumed-role session ARN, use the underlying IAM role ARN, including its path if it has one.
+
+```hcl
+project_account_id    = "PROJECT_ACCOUNT_ID"
+bucket_name           = "kubernetes-hard-way-PROJECT_ACCOUNT_ID-tfstate"
+trusted_principal_arn = "YOUR_MANAGEMENT_IAM_PRINCIPAL_ARN"
 ```
 
-### 3. Create the state bucket and roles
-
-The [bootstrap configuration](state-bucket/main.tf) runs as `kthw-bootstrap` in the member account. It creates the S3 bucket with versioning, SSE-S3 encryption, and public access blocking. The provisioner and SSH roles both trust `nick-admin`. The management caller also needs IAM permission to assume those cross-account roles. The jumpbox has a separate EC2 instance profile with `AmazonSSMManagedInstanceCore` so its agent can register with Systems Manager.
+The trusted principal also needs permission to assume the cross-account roles. Verify that `kthw-bootstrap` resolves to the member account, then review and apply the bootstrap plan. If the account was just created, allow a short time for its bootstrap role to become available.
 
 ```sh
+aws --profile kthw-bootstrap sts get-caller-identity
 AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket init
-AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket plan -out=tfplan \
-  -var='project_account_id=476564946996' \
-  -var='bucket_name=kubernetes-hard-way-476564946996-tfstate'
+AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket plan -out=tfplan
 AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket apply tfplan
 terraform -chdir=state-bucket output -raw backend_config > lab.s3.tfbackend
 ```
 
-After applying the bootstrap, these commands verified the two role sessions and initialized the live backend. The read-only S3 check returned `AccessDenied`, as expected.
+This creates a private, encrypted, versioned bucket with S3 lock files enabled in the lab backend. The bucket policy denies direct object access to principals other than the provisioner. The bootstrap administrator can edit the policy for recovery. The provisioner manages the lab's EC2 and VPC resources in the configured region. Keep routine access in the project account limited to the roles intended for it.
+
+Back up `project-account/terraform.tfstate` and `state-bucket/terraform.tfstate` in a secure location separate from the lab's state bucket. Git ignores these two local state files, your `*.auto.tfvars`, and the generated `lab.s3.tfbackend`. The lab state itself lives in S3 under `kubernetes-hard-way/terraform.tfstate`.
+
+## 3. Deploy the lab
+
+Create `account.auto.tfvars` in this directory with the member account ID. To enable public HTTP and HTTPS, add the public IPv4 CIDR of each client. Replace the documentation address below with your own public address and use `/32` for a single client. Omit the setting to keep public ingress closed.
+
+```hcl
+project_account_id    = "PROJECT_ACCOUNT_ID"
+budget_alert_email    = "YOUR_ALERT_EMAIL"
+ingress_allowed_cidrs = ["203.0.113.10/32"]
+```
+
+Create and load a dedicated local key. Loading it allows the jumpbox to use SSH agent forwarding for the initial connection to each private node.
 
 ```sh
+ssh-keygen -t ed25519 -f "$HOME/.ssh/kthw_ed25519" -C "kubernetes-hard-way"
+ssh-add "$HOME/.ssh/kthw_ed25519"
+export TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/kthw_ed25519.pub")"
 aws --profile kthw-provisioner sts get-caller-identity
-aws --profile kthw-instance-access sts get-caller-identity
-terraform init -backend-config=lab.s3.tfbackend
-aws --profile kthw-instance-access --region us-east-1 s3api list-objects-v2 \
-  --bucket kubernetes-hard-way-476564946996-tfstate --max-keys 1
 ```
 
-Both the S3 backend and the AWS provider use `kthw-provisioner`. The [bucket and IAM policies](state-bucket/access.tf) deny direct S3 object access to other principals. The provisioner can read and write the state, remove the lock, and manage the lab's EC2 and VPC resources in `us-east-1`. Its EC2 permissions are scoped by region and API action. The dedicated account keeps unrelated resources and routine administrators outside that boundary. The bootstrap administrator retains emergency access and can edit the bucket policy for recovery.
+If necessary, start an SSH agent before running `ssh-add`. Use the same public key when running Terraform again. Confirm the provisioner is in the member account. If you choose a different region, set the lab's `aws_region` and the bootstrap's `lab_region` to match.
 
-Back up `project-account/terraform.tfstate` and `state-bucket/terraform.tfstate` securely. These are separate local states. The lab state lives in S3. Terraform state, plans, local variables, and the generated backend configuration are ignored by Git.
+From the repository root, run `make up`. This initializes the existing S3 backend, creates and applies a fresh plan, and starts any stopped lab instances. It refuses plans that delete or replace instances or EBS volumes. To review a first deployment before making changes, initialize the backend and run `terraform plan` in this directory first. The plan should show one `t3.micro`, three `t3.small`, 70 GiB of encrypted gp3 storage, and only the jumpbox configured for a public address.
 
-## Deploy the lab
+The lab configuration creates an account-wide $50 monthly AWS cost budget with actual-spend email alerts at 80% and 90%. It includes bootstrap costs and other account charges; it does not stop spending. The budget is removed when the lab is destroyed. Resources that support tags receive `Cost = lab` or `Cost = bootstrap`; activate the `Cost` tag in AWS Billing to use it for cost allocation. Existing deployments must apply the updated `state-bucket` configuration first to grant the provisioner budget permissions.
 
-Use Terraform 1.10 or later and an OpenSSH public key. Keep the matching private key on your workstation. Terraform creates one Debian 12 `t3.micro` jumpbox and three `t3.small` nodes, with 70 GiB of encrypted EBS storage and four public IPv4 addresses for outbound connectivity. Check your account's EC2, storage, and IPv4 charges before deploying. The jumpbox accepts workstation SSH through Session Manager without an internet-facing SSH rule.
+## 4. Connect and install Kubernetes
 
-Run from `infrastructure/terraform`. The existing local `account.auto.tfvars` sets `project_account_id = "476564946996"`. Use your own public key path below. If you previously deployed this lab in another account, keep that backend separate and use empty lab state in the new account.
+Allow time for cloud-init to install SSM Agent, nftables and HAProxy. From this directory on your workstation, connect as Debian's `admin` user through Session Manager:
 
 ```sh
-export AWS_CONFIG_FILE="$PWD/project.awsconfig"
-export TF_VAR_ssh_public_key="$(cat "$HOME/.ssh/id_ed25519.pub")"
-terraform init -backend-config=lab.s3.tfbackend
-terraform plan -out=tfplan
-terraform apply tfplan
+region=$(terraform output -raw lab_region)
+jumpbox=$(terraform output -raw jumpbox_instance_id)
+ssh -A -i "$HOME/.ssh/kthw_ed25519" \
+  -o "ProxyCommand=aws --profile kthw-instance-access --region $region ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
+  "admin@$jumpbox"
 ```
 
-For a fresh checkout of this project, restore the local profile and account variables above, and regenerate `lab.s3.tfbackend` from the bootstrap state. If you change the lab's `aws_region`, set `lab_region` to match in the bootstrap.
+On the jumpbox, check `sudo cloud-init status --wait` and `sudo systemctl is-active nftables haproxy amazon-ssm-agent`. For boot errors, inspect `sudo less /var/log/cloud-init-output.log`.
 
-## Connect and continue the tutorial
+Use the [manual jumpbox setup](../../docs/02-jumpbox.md), then copy the workstation's `terraform output -raw machines_txt` into the tutorial's `machines.txt` on the jumpbox. Initially SSH from the jumpbox to the nodes as `admin`, then use the tutorial's [SSH setup](../../docs/03-compute-resources.md#configuring-ssh-access) to configure root access. The [AWS worker CNI instructions](../../docs/09-bootstrapping-kubernetes-workers.md) and [pod routing instructions](../../docs/11-pod-network-routes.md) preserve pod IPs between workers. Complete the [AWS NodePort smoke test](../../docs/12-smoke-test.md#services) to expose an HTTP backend on TCP 30080.
 
-Install the AWS CLI Session Manager plugin and wait for cloud-init to install and start SSM Agent. The tunnel requires the `kthw-instance-access` role. SSH then authenticates Debian's `admin` user with your private key.
+## Use an existing deployment
+
+Ask the project administrator for the account ID, role names, and access to the appropriate Terraform state before running any bootstrap commands. Clone the repository, configure the profiles for that account, then recreate the local variable files and backend configuration. If you administer the bootstrap, restore both local states from backup and regenerate `lab.s3.tfbackend` with `terraform -chdir=state-bucket output -raw backend_config`. If you only deploy the lab, ask the administrator for the generated backend file and restore just the lab variables. Getting a fresh checkout takes neither account creation nor copying S3 lab state to disk.
+
+The original deployment is recorded here for maintainers. Use these values only if you are working on that deployment and already have access.
+
+| Setting | Original deployment |
+| --- | --- |
+| Management account | `637423194439` (`cakesmith`) |
+| Member account | `476564946996` (`Kubernetes The Hard Way`) |
+| Management caller | `arn:aws:iam::637423194439:user/nick-admin` via CLI profile `default` |
+| State bucket | `kubernetes-hard-way-476564946996-tfstate` in `us-east-1` |
+| S3 lock object | `kubernetes-hard-way/terraform.tfstate.tflock` |
+
+On November 19, 2026, Terraform 1.10.5 and AWS provider 5.100.0 created the member account, bucket, and roles. The original checkout used a standalone, ignored `project.awsconfig` with the four profiles above. Its credential helper was `env -u AWS_CONFIG_FILE aws --profile default configure export-credentials --format process`, which lets the CLI find `default` in the normal config. If you have that file, select it with `export AWS_CONFIG_FILE="$PWD/project.awsconfig"`. New users can put their profiles in the normal AWS config as shown in steps 1 and 2.
+
+The bootstrap verified both project role sessions and initialized the S3 backend. A read-only attempt by the SSH role to list the bucket returned `AccessDenied`. A plan using a temporary public key showed 14 lab resources. That plan was never applied, so the bootstrap did not verify SSH to a running instance.
+
+## Migrate from the single public subnet
+
+The existing account, bucket, role names, backend key, public subnet address, and jumpbox address are retained. If you only applied the bootstrap, there are no lab resources to move. Leave the existing states in place, ignore the unapplied old `tfplan`, and run `make up` with the new configuration. Run these commands from `infrastructure/terraform` once to update the existing bootstrap IAM policies:
 
 ```sh
-ssh -i "$HOME/.ssh/id_ed25519" \
-  -o 'ProxyCommand=aws --profile kthw-instance-access --region us-east-1 ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p' \
-  "admin@$(terraform output -raw jumpbox_instance_id)"
+AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket init
+AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket plan -out=tfplan
+AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket apply tfplan
 ```
 
-On your workstation, run `terraform output -raw machines_txt` and copy its contents into `machines.txt` on the jumpbox. For initial access to the nodes, use SSH agent forwarding from your workstation with `ssh -A` and log in to each node as `admin`. Follow the tutorial's [SSH setup](../../docs/03-compute-resources.md#configuring-ssh-access) to enable root access with a separate jumpbox key.
+Review the bootstrap plan before applying. The policy update restricts EC2 power operations and termination to tagged lab instances and replaces the jumpbox's broad SSM managed policy with the [Session Manager agent permissions](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-create-iam-instance-profile.html). The account, bucket, roles and instance profile stay in place. This assumes the current SSM Agent uses `ssmmessages` and the account does not require optional KMS session encryption or session logs.
 
-Run `terraform destroy` from the lab directory with the same variables and provisioner profile when finished. The member account, bucket, and bootstrap roles remain available for the next run.
+If the old lab was deployed, first inspect `terraform state list` and take an etcd snapshot and any required EBS snapshots or file backups. Moving the control plane and workers to another subnet changes their primary ENIs and addresses and requires replacing those three instances. Replacement deletes their root volumes. Previous certificates may contain the old IP SANs, and the machine database, host entries, SSH keys, and components configured with literal addresses must be updated. Restore the etcd snapshot and required PKI and encryption keys deliberately, and reissue certificates for the new identities as needed. A supported option for a disposable lab is to reinstall Kubernetes using the new machine database. Review the Terraform plan and apply any intentional replacements explicitly. `make up` will refuse them. If the old jumpbox survives the apply, use [the guest update procedure](#update-the-jumpbox-and-test-ingress) to install NAT and HAProxy on it.
 
-## Connect another project
+## Run, stop, and destroy the lab
 
-When a second project needs a private network path, use the `vpc_id`, `vpc_cidr`, `route_table_id`, and `availability_zone_id` outputs to configure cross-account VPC peering. Choose a peer CIDR that avoids the lab VPC (`172.16.0.0/16`) and its pod networks (`10.200.0.0/24` and `10.200.1.0/24`). Add routes on both sides and allow the required application ports. To align physical zones across accounts, set `availability_zone_id` before deploying. Same-AZ peering traffic is free. Cross-AZ and cross-region transfer rates apply. [AWS VPC peering setup](https://docs.aws.amazon.com/vpc/latest/peering/create-vpc-peering-connection.html) · [AWS VPC pricing](https://aws.amazon.com/vpc/pricing/)
+Run these commands from the repository root.
 
-Use the `ResourceType` tag as a cost allocation tag in AWS Billing to distinguish supported resource types in cost reports.
+| Command | Effect |
+| --- | --- |
+| `make up` | Plans and applies changes, guards against instance or EBS deletion, then ensures the lab is running. |
+| `make status` | Shows instance states, private IPs and the current jumpbox public IPv4 address. |
+| `make stop` | Stops workers, then the control plane, then the jumpbox. |
+| `make start` | Starts the jumpbox and waits for EC2 checks, then starts the control plane and workers. |
+| `make destroy` | Prompts before destroying the lab and deleting its root volumes. Retains the bootstrap. |
+
+Power commands use IDs, region and account from Terraform outputs and check the caller's account. They leave the Terraform resource configuration and network targets intact. The subnet controls public IPv4 assignment so the provider can refresh the transient association without planning to replace the jumpbox. EC2 health checks do not guarantee that systemd, SSM, or Kubernetes is ready. Keep lifecycle operations sequential and use the validation commands below to check readiness.
+
+Stopping preserves the ENIs, private addresses and attached EBS volumes, including etcd and Kubernetes configuration. The automatically allocated public IPv4 address is released and can change on startup. Instance compute and that public IP stop accruing charges. EBS storage, S3 storage and requests, and any retained snapshots still incur charges. While running, budget for EC2, one public IPv4 and applicable data transfer. [AWS EC2 stop and start behavior](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/how-ec2-instance-stop-start-works.html) · [AWS VPC pricing](https://aws.amazon.com/vpc/pricing/)
+
+## Update the jumpbox and test ingress
+
+Terraform renders the [jumpbox bootstrap template](jumpbox/bootstrap.sh.tftpl) with the subnet CIDRs, worker addresses and NodePort. Cloud-init runs it on first boot. nftables and HAProxy run as enabled systemd services on subsequent boots. Terraform leaves the existing launch image and user data in place so a newer AMI or template edit does not recycle the instance. After applying a template change, update the existing guest explicitly over the SSH tunnel from step 4:
+
+```sh
+terraform output -raw jumpbox_config | ssh -i "$HOME/.ssh/kthw_ed25519" \
+  -o "ProxyCommand=aws --profile kthw-instance-access --region $region ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
+  "admin@$jumpbox" 'sudo bash -s'
+```
+
+The bootstrap owns `/etc/nftables.conf` and `/etc/haproxy/haproxy.cfg`. It preserves the existing TLS PEM at `/etc/haproxy/tls/jumpbox.pem`. The lab generates a self-signed certificate for `kthw-ingress.local`. For a different hostname or public trust, install your own certificate chain and private key in that PEM with mode `0600` and reload HAProxy. Update your DNS when the jumpbox public IP changes. For the lab certificate, fetch only its public portion over the SSH tunnel using `sudo openssl x509 -in /etc/haproxy/tls/jumpbox.pem` and trust it explicitly with curl:
+
+```sh
+# Get PUBLIC_IP from make status and save the public certificate as jumpbox.crt.
+curl "http://$PUBLIC_IP/"
+curl --cacert jumpbox.crt --resolve "kthw-ingress.local:443:$PUBLIC_IP" https://kthw-ingress.local/
+```
+
+HAProxy proxies both listeners to the workers' shared NodePort 30080 and returns HTTP 503 until a backend comes up. Use a Service with `externalTrafficPolicy: Local` so a worker with no local endpoint fails the HAProxy TCP health check. This keeps the NodePort traffic within the worker security rules. The proxy serves one HTTP backend pool. It does not expose Kubernetes API access, handle automatic certificate issuance, or provide high availability.
+
+## Architecture
+
+```mermaid
+flowchart TB
+  operator[Operator] -->|Assume role| provisioner[Provisioner role]
+  operator -->|Assume role| access[Instance access role]
+  provisioner -->|State and lock| state[S3 state bucket]
+  provisioner -->|Manage EC2 and VPC| ec2[EC2 API]
+  provisioner -->|PassRole to EC2| role[Jumpbox IAM role]
+  access -->|AWS-StartSSHSession| ssm[Systems Manager]
+  client["Allowlisted web client"] --> internet[Internet]
+  subgraph vpc["VPC 172.16.0.0/16 · one AZ"]
+    igw[Internet gateway]
+    publicrt["Public routes: default → IGW"]
+    privatert["Private routes: default → jumpbox ENI"]
+    podrt["Both route tables: pod CIDRs → worker ENIs"]
+    subgraph public["Public subnet 172.16.0.0/24"]
+      jump["Jumpbox 172.16.0.10 · public IPv4 while running<br/>SSM SSH, nftables NAT, HAProxy · 10 GiB"]
+    end
+    subgraph private["Private subnet 172.16.1.0/24 · no public IPv4"]
+      server["Control plane + etcd · 172.16.1.11 · 20 GiB"]
+      worker0["node-0 · 172.16.1.20 · 20 GiB<br/>Pods 10.200.0.0/24"]
+      worker1["node-1 · 172.16.1.21 · 20 GiB<br/>Pods 10.200.1.0/24"]
+    end
+    publicrt --> igw
+    privatert --> jump
+    podrt --> worker0 & worker1
+    jump -->|SSH TCP 22| server & worker0 & worker1
+    jump -->|Kubernetes API TCP 6443| server
+    jump -->|HAProxy HTTP to TCP 30080| worker0 & worker1
+    worker0 & worker1 -->|Kubernetes API TCP 6443| server
+    server -->|kubelet TCP 10250| worker0 & worker1
+    worker0 <-->|Routed pod traffic| worker1
+    server & worker0 & worker1 -->|HTTP and HTTPS egress| privatert
+    jump -->|Masqueraded egress| publicrt
+  end
+  internet <-->|Web traffic| igw
+  igw -->|Allowlisted TCP 80 and 443| jump
+  jump -->|Agent connects outbound TCP 443| ssm
+  jump --> profile[Instance profile]
+  profile --> role
+  role --> policy[Session Manager agent policy]
+```
+
+The jumpbox and workers have source/destination checks disabled for forwarding. Nodes use Amazon VPC DNS and route web traffic via the jumpbox. The security groups restrict host traffic to the ports shown, with pod-source traffic allowed to the API and between workers. Internet egress is limited to TCP 80 and 443. Other outbound protocols require explicit security group and nftables changes. All systems use encrypted gp3 root EBS volumes. The single jumpbox is a dependency for administration, outbound web traffic and public ingress. The whole lab runs in one AZ and etcd has one member.
+
+Use the `vpc_id`, `vpc_cidr`, `route_table_id` (private), `public_route_table_id`, and `availability_zone_id` outputs for future peering. Make sure the peer does not overlap the VPC or pod CIDRs. Review both routing and security groups for the intended peer traffic.
+
+## Validation
+
+- `make validate` checks Terraform formatting and schema, runs mock-provider network tests, and exercises lifecycle behavior with local AWS and Terraform stubs. Initialize the Terraform provider first.
+- `make validate-live` checks AWS route targets, SSM SSH, private SSH, node egress, the authenticated API, cross-worker pod traffic and pod egress, and public HTTP and HTTPS. Complete the manual tutorial, keep the smoke-test nginx Service running, and include your workstation in `ingress_allowed_cidrs`. Set `KTHW_SSH_KEY` if the SSH key differs from the default. For custom TLS, set `KTHW_TLS_NAME` and `KTHW_TLS_CA`.
+- `make validate-recovery` also creates a temporary Kubernetes ConfigMap, stops and starts all four instances, compares the instance, ENI and disk IDs, reruns connectivity checks, verifies the same ConfigMap UID, and requires empty Terraform plans while stopped and after restart. Run it when you can interrupt the lab. The live checks create and remove two test Pods and pull small images.

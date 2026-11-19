@@ -11,6 +11,10 @@ terraform {
 provider "aws" {
   region              = "us-east-1"
   allowed_account_ids = [var.management_account_id]
+
+  default_tags {
+    tags = { Cost = "bootstrap" }
+  }
 }
 
 variable "management_account_id" {

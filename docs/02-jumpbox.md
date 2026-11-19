@@ -4,6 +4,8 @@ In this lab you will set up one of the four machines to be a `jumpbox`. This mac
 
 Think of the `jumpbox` as the administration machine that you will use as a home base when setting up your Kubernetes cluster from the ground up. Before we get started we need to install a few command line utilities and clone the Kubernetes The Hard Way git repository, which contains some additional configuration files that will be used to configure various Kubernetes components throughout this tutorial.
 
+**AWS infrastructure add-on.** Connect using the [Session Manager instructions](../infrastructure/terraform/README.md#4-connect-and-install-kubernetes) and run `sudo --preserve-env=SSH_AUTH_SOCK -i` to start a root shell with the forwarded agent. Use your fork or copy of this repository when syncing the tutorial files so you have the AWS instructions and templates. Once connected, skip the SSH command below and continue with [Install Command Line Utilities](#install-command-line-utilities).
+
 Log in to the `jumpbox`:
 
 ```bash

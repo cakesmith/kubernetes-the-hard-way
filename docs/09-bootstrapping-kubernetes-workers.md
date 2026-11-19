@@ -6,6 +6,26 @@ In this lab you will bootstrap two Kubernetes worker nodes. The following compon
 
 The commands in this section must be run from the `jumpbox`.
 
+**AWS infrastructure add-on.** Set `AWS_HYBRID=true` on the jumpbox and use this block to generate and copy the worker configs. Then skip the general config block and continue with the binary and unit file copies.
+
+```bash
+for HOST in node-0 node-1; do
+  SUBNET=$(grep ${HOST} machines.txt | cut -d " " -f 4)
+  if [ "${AWS_HYBRID:-false}" = true ]; then
+    sed -e "s|SUBNET|$SUBNET|g" -e 's/"ipMasq": true/"ipMasq": false/' \
+      configs/10-bridge.conf > 10-bridge.conf
+  else
+    sed "s|SUBNET|$SUBNET|g" configs/10-bridge.conf > 10-bridge.conf
+  fi
+
+  sed "s|SUBNET|$SUBNET|g" \
+    configs/kubelet-config.yaml > kubelet-config.yaml
+
+  scp 10-bridge.conf kubelet-config.yaml \
+  root@${HOST}:~/
+done
+```
+
 Copy the Kubernetes binaries and systemd unit files to each worker instance:
 
 ```bash
@@ -106,6 +126,13 @@ Install the worker binaries:
 ```
 
 ### Configure CNI Networking
+
+**AWS infrastructure add-on.** The generated bridge config disables worker masquerading so cross-worker traffic retains its pod source IP. The jumpbox handles internet NAT. On each AWS worker, persist IPv4 forwarding:
+
+```bash
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/90-kthw-pods.conf
+sysctl -p /etc/sysctl.d/90-kthw-pods.conf
+```
 
 Create the `bridge` network configuration file:
 

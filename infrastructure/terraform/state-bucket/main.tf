@@ -12,6 +12,10 @@ terraform {
 provider "aws" {
   region              = var.aws_region
   allowed_account_ids = [var.project_account_id]
+
+  default_tags {
+    tags = { Cost = "bootstrap" }
+  }
 }
 
 # Bootstrap the trust separately from the lab: the role must exist before

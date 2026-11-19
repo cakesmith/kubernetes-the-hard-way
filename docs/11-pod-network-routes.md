@@ -6,6 +6,10 @@ In this lab you will create a route for each worker node that maps the node's Po
 
 > There are [other ways](https://kubernetes.io/docs/concepts/cluster-administration/networking/#how-to-achieve-this) to implement the Kubernetes networking model.
 
+## AWS infrastructure add-on: Pod routes
+
+Terraform installs routes in both VPC route tables for `10.200.0.0/24` via the node-0 ENI and `10.200.1.0/24` via the node-1 ENI. Worker source/destination checks are disabled so those ENIs can forward pod traffic. The Debian guests use their ordinary subnet gateway, so skip the guest `ip route add` commands below. The VPC routes persist across stop/start. Use the [AWS worker CNI settings](09-bootstrapping-kubernetes-workers.md#prerequisites) and run the [AWS connectivity checks](../infrastructure/terraform/README.md#validation) after completing the smoke test.
+
 ## The Routing Table
 
 In this section you will gather the information required to create routes in the `kubernetes-the-hard-way` VPC network.

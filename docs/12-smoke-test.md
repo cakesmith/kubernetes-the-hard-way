@@ -152,6 +152,26 @@ nginx version: nginx/1.27.4
 
 In this section you will verify the ability to expose applications using a [Service](https://kubernetes.io/docs/concepts/services-networking/service/).
 
+**AWS infrastructure add-on.** Use this NodePort Service in place of the general `kubectl expose` command below. The AWS jumpbox forwards HTTP and HTTPS to TCP 30080. `externalTrafficPolicy: Local` makes workers without a local nginx pod fail the proxy's TCP health check.
+
+```bash
+kubectl apply -f - <<'YAML'
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+YAML
+```
+
 Expose the `nginx` deployment using a [NodePort](https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport) service:
 
 ```bash
@@ -192,5 +212,7 @@ Connection: keep-alive
 ETag: "67a34638-267"
 Accept-Ranges: bytes
 ```
+
+**AWS infrastructure add-on.** Also run `curl -fsS http://127.0.0.1/` on the jumpbox to check HAProxy. From an allowlisted workstation, follow the [public HTTP and HTTPS checks](../infrastructure/terraform/README.md#update-the-jumpbox-and-test-ingress).
 
 Next: [Cleaning Up](13-cleanup.md)
