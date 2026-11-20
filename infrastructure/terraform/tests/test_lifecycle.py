@@ -17,7 +17,7 @@ state = json.loads(path.read_text())
 args = sys.argv[5:]
 with path.with_name("calls").open("a") as f:
     print(json.dumps(args), file=f)
-assert sys.argv[1:5] == ["--profile", "kthw-provisioner", "--region", "us-east-1"]
+assert sys.argv[1:5] == ["--profile", "kthw-instance-access", "--region", "us-east-1"]
 if args[0] == "sts":
     print(os.environ["TEST_ACCOUNT"])
 elif args[1] == "describe-instances" and args[-3] == "Reservations[0].Instances[0].State.Name":

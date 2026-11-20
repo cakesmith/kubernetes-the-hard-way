@@ -172,6 +172,10 @@ spec:
 YAML
 ```
 
+On AWS, continue with [HTTP and HTTPS over SSM-backed SSH](#aws-http-and-https-over-ssm-backed-ssh).
+
+### NodePort check for the original tutorial
+
 Expose the `nginx` deployment using a [NodePort](https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport) service:
 
 ```bash
@@ -213,6 +217,29 @@ ETag: "67a34638-267"
 Accept-Ranges: bytes
 ```
 
-**AWS infrastructure add-on.** Also run `curl -fsS http://127.0.0.1/` on the jumpbox to check HAProxy. From an allowlisted workstation, follow the [public HTTP and HTTPS checks](../infrastructure/terraform/README.md#update-the-jumpbox-and-test-ingress).
+### AWS HTTP and HTTPS over SSM-backed SSH
+
+Run these commands from your workstation using the [SSM-backed `jumpbox` SSH alias](../infrastructure/terraform/README.md#set-up-ssh-aliases). The alias uses the `kthw-instance-access` profile to connect to the jumpbox. Both forwards listen only on your workstation's loopback interface, so you can leave `ingress_allowed_cidrs` empty.
+
+From the repository root, copy the public lab certificate from the jumpbox and start the tunnel. Leave this terminal open while you test.
+
+```bash
+ssh -a jumpbox 'sudo openssl x509 -in /etc/haproxy/tls/jumpbox.pem' > jumpbox.crt &&
+make web-tunnel
+```
+
+In a second workstation terminal, from the directory containing `jumpbox.crt`, check both listeners. Each request should return the nginx welcome page. The HTTPS check uses the certificate's hostname and verifies it against the certificate you copied.
+
+```bash
+curl --noproxy '*' -fsS http://127.0.0.1/
+curl --noproxy '*' -fsS --cacert jumpbox.crt \
+  --resolve kthw-ingress.local:443:127.0.0.1 https://kthw-ingress.local/
+```
+
+In a browser, open `http://127.0.0.1/` directly. To open `https://kthw-ingress.local/`, map `kthw-ingress.local` to `127.0.0.1` in your workstation's hosts file and configure your browser to trust the lab certificate. If you installed a custom TLS certificate, use its hostname and CA instead. Press Ctrl-C in the first terminal to close both forwards.
+
+If your workstation restricts or already uses local ports 80 and 443, run `make web-tunnel TUNNEL_PORTS='8080:80 8443:443'`. Use port `8080` in the HTTP URL and port `8443` in both the HTTPS URL and the `--resolve` option.
+
+If you've separately configured public ingress, see the [public HTTP and HTTPS checks](../infrastructure/terraform/README.md#update-the-jumpbox-and-test-ingress).
 
 Next: [Cleaning Up](13-cleanup.md)

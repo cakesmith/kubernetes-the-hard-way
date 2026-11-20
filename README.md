@@ -26,12 +26,14 @@ Component versions:
 
 ## AWS infrastructure add-on
 
-Terraform provisions a public jumpbox and three private Kubernetes machines. Follow the [AWS setup guide](infrastructure/terraform/README.md) to configure the AWS profiles, Terraform backend, and SSH key. Then run these commands from the repository root.
+Terraform provisions a public jumpbox and three private Kubernetes machines. Follow the [AWS setup guide](infrastructure/terraform/README.md) to configure the AWS profiles, Terraform backend, and SSH key. Run `make` from the repository root to list the available commands.
 
 | Command | What it does |
 | --- | --- |
 | `make up` | Provisions or updates the AWS lab and starts the instances. Continue with the manual Kubernetes installation below. |
 | `make status` | Shows instance states, private IPs, and the current jumpbox public IP. |
+| `make web-tunnel` | Forwards local HTTP and HTTPS to the jumpbox over SSM-backed SSH. Defaults to `80:80 443:443`. |
+| `make kube-tunnel` | Sets up the workstation lab kubeconfig and opens the [Kubernetes API tunnel](docs/10-configuring-kubectl.md#aws-workstation-access). |
 | `make stop` | Stops all four instances and preserves Kubernetes data on EBS. EBS storage still incurs charges. |
 | `make start` | Restarts the stopped instances with the same private IPs and disks. |
 | `make destroy` | Prompts before deleting the lab and its root disks. Retains the bootstrap account, state bucket, and IAM roles. |
@@ -40,6 +42,10 @@ Terraform provisions a public jumpbox and three private Kubernetes machines. Fol
 | `make validate-recovery` | Stops and restarts the lab to verify connectivity, persistent data, and Terraform state. |
 
 See the [validation prerequisites](infrastructure/terraform/README.md#validation) before running the live checks.
+
+See [SSH hops and agent forwarding](infrastructure/terraform/README.md#ssh-hops-and-agent-forwarding) for a diagram of how your workstation, jumpbox, and private nodes connect.
+
+Set up the [SSM-backed `jumpbox` alias](infrastructure/terraform/README.md#set-up-ssh-aliases) before running `make web-tunnel`. Override the space-separated `LOCAL_PORT:JUMPBOX_PORT` pairs with `make web-tunnel TUNNEL_PORTS='8080:80 8443:443'` if your workstation restricts or already uses ports 80 and 443.
 
 ## Labs
 

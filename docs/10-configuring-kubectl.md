@@ -2,7 +2,7 @@
 
 In this lab you will generate a kubeconfig file for the `kubectl` command line utility based on the `admin` user credentials.
 
-> Run the commands in this lab from the `jumpbox` machine.
+> Run the admin configuration and verification on the `jumpbox`. The [AWS workstation setup](#aws-workstation-access) runs on your workstation.
 
 ## The Admin Kubernetes Configuration File
 
@@ -79,5 +79,39 @@ NAME     STATUS   ROLES    AGE    VERSION
 node-0   Ready    <none>   10m   v1.32.3
 node-1   Ready    <none>   10m   v1.32.3
 ```
+
+## AWS workstation access
+
+Complete the jumpbox setup above and configure the [SSM-backed `jumpbox` SSH alias](../infrastructure/terraform/README.md#set-up-ssh-aliases) first. The lab must be running, and your workstation needs `kubectl`. Run the following from the repository root on your workstation. If you use Windows with WSL, run it in WSL.
+
+```bash
+make kube-tunnel
+```
+
+If `~/.kube/kthw-aws.yaml` is missing, the target needs passwordless `sudo` on the jumpbox to export the admin kubeconfig with its certificate and key embedded. It saves the file with permissions limited to your user. Later runs reuse that file. The target selects `kubernetes-the-hard-way` in the lab file and forwards `127.0.0.1:16443` to the private Kubernetes API on port 6443.
+
+Keep that terminal open. In a second workstation terminal, verify access:
+
+```bash
+kubectl --kubeconfig="$HOME/.kube/kthw-aws.yaml" get nodes
+kubectl --kubeconfig="$HOME/.kube/kthw-aws.yaml" get pods -A
+```
+
+### Make the lab your default in Bash
+
+Add this line to `~/.bashrc` once. Put the lab file first so its current context takes precedence and your other contexts are still available.
+
+```bash
+export KUBECONFIG="$HOME/.kube/kthw-aws.yaml:$HOME/.kube/config"
+```
+
+In any terminal that was already open, run `source ~/.bashrc`. Then verify that plain `kubectl` uses the lab:
+
+```bash
+kubectl config current-context
+kubectl get nodes
+```
+
+Expect `kubernetes-the-hard-way` as the current context. If an error still names `kubernetes.docker.internal:6443`, check the context and reload `~/.bashrc` in that terminal. If the connection is refused on `127.0.0.1:16443`, check the tunnel terminal for SSH errors and rerun `make kube-tunnel` once the port is free. Press Ctrl+C in the tunnel terminal to disconnect. Run `make kube-tunnel` again the next time you need workstation access.
 
 Next: [Provisioning Pod Network Routes](11-pod-network-routes.md)

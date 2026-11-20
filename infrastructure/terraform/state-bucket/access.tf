@@ -4,7 +4,7 @@ variable "project_account_id" {
 }
 
 variable "lab_region" {
-  description = "Region in which the provisioner can manage lab infrastructure"
+  description = "Region in which the project roles can manage lab resources"
   type        = string
   default     = "us-east-1"
 }
@@ -85,9 +85,9 @@ resource "aws_iam_role_policy" "provisioner" {
         Condition = { StringEquals = { "aws:RequestedRegion" = var.lab_region } }
       },
       {
-        Sid      = "ManageLabInstancePowerAndTermination"
+        Sid      = "TerminateLabInstances"
         Effect   = "Allow"
-        Action   = ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances"]
+        Action   = "ec2:TerminateInstances"
         Resource = "${local.lab_ec2_arn}:instance/*"
         Condition = {
           StringEquals = { "ec2:ResourceTag/ManagedBy" = "kubernetes-hard-way" }
@@ -153,6 +153,32 @@ resource "aws_iam_role" "instance_access" {
   name               = "kubernetes-hard-way-instance-access"
   assume_role_policy = aws_iam_role.provisioner.assume_role_policy
   tags               = local.access_tags
+}
+
+resource "aws_iam_role_policy" "instance_power" {
+  name = "lab-instance-power"
+  role = aws_iam_role.instance_access.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "ReadInstanceStatus"
+        Effect    = "Allow"
+        Action    = ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus"]
+        Resource  = "*"
+        Condition = { StringEquals = { "aws:RequestedRegion" = var.lab_region } }
+      },
+      {
+        Sid      = "ManageLabInstancePower"
+        Effect   = "Allow"
+        Action   = ["ec2:StartInstances", "ec2:StopInstances"]
+        Resource = "${local.lab_ec2_arn}:instance/*"
+        Condition = {
+          StringEquals = { "ec2:ResourceTag/ManagedBy" = "kubernetes-hard-way" }
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role_policy" "instance_access" {

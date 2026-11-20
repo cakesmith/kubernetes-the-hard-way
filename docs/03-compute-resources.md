@@ -34,21 +34,33 @@ SSH will be used to configure the machines in the cluster. Verify that you have 
 
 ### AWS infrastructure add-on: SSH to private nodes
 
-The AWS key pair grants initial access to Debian's `admin` user. From the jumpbox root shell with the forwarded agent, install a separate jumpbox key for the tutorial's root SSH commands:
+The AWS key pair grants initial access to Debian's `admin` user. Connect from your workstation with `ssh -A jumpbox`. On the jumpbox, change to the directory containing `machines.txt`, then start a root shell that keeps the forwarded agent and current directory:
 
 ```bash
-test -f /root/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519
-while read -r IP FQDN HOST SUBNET; do
-  ssh "admin@$IP" 'sudo install -d -m 0700 /root/.ssh &&
-    sudo sh -c '"'"'umask 077; touch /root/.ssh/authorized_keys
-    IFS= read -r key
-    grep -qxF "$key" /root/.ssh/authorized_keys || printf "%s\n" "$key" >> /root/.ssh/authorized_keys'"'" \
-    < /root/.ssh/id_ed25519.pub
-  ssh -n "root@$IP" true
-done < machines.txt
+sudo --preserve-env=SSH_AUTH_SOCK -H -s
+ssh-add -l
 ```
 
-Debian permits root login with a key when `PermitRootLogin prohibit-password` applies and the key is in `/root/.ssh/authorized_keys`. If verification fails, check the effective SSH daemon configuration as `admin`. Continue to [Hostnames](#hostnames) once root SSH works.
+Confirm that `ssh-add -l` lists your workstation's lab key before continuing. From this root shell, install a separate jumpbox key for the tutorial's root SSH commands:
+
+```bash
+install -d -m 0700 /root/.ssh
+if test -f /root/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519; then
+  while read -r IP FQDN HOST SUBNET; do
+    [ -n "$IP" ] || continue
+    ssh "admin@$IP" 'sudo install -d -m 0700 /root/.ssh &&
+      sudo sh -c '"'"'umask 077; touch /root/.ssh/authorized_keys
+      IFS= read -r key
+      grep -qxF "$key" /root/.ssh/authorized_keys || printf "%s\n" "$key" >> /root/.ssh/authorized_keys'"'" \
+      < /root/.ssh/id_ed25519.pub || break
+    ssh -n -o IdentitiesOnly=yes -i /root/.ssh/id_ed25519 "root@$IP" id -un || break
+  done < machines.txt
+fi
+```
+
+Debian permits root login with a key when `PermitRootLogin prohibit-password` applies and the key is in `/root/.ssh/authorized_keys`. Expect `root` once per node. If verification fails, check the effective SSH daemon configuration as `admin`.
+
+Once root SSH works on all three nodes, run `unset SSH_AUTH_SOCK` in the jumpbox root shell. This lets the tutorial's plain `ssh root@...` commands use the jumpbox key. If SSH offers the forwarded AWS key first, Debian can accept that key with a forced command that prints `Please login as the user "admin" rather than the user "root".` Continue to [Hostnames](#hostnames) in the same root shell.
 
 ### Enable root SSH Access
 
@@ -125,6 +137,7 @@ Set the hostname on each machine listed in the `machines.txt` file:
 
 ```bash
 while read IP FQDN HOST SUBNET; do
+    [ -n "$IP" ] || continue
     CMD="sed -i 's/^127.0.1.1.*/127.0.1.1\t${FQDN} ${HOST}/' /etc/hosts"
     ssh -n root@${IP} "$CMD"
     ssh -n root@${IP} hostnamectl set-hostname ${HOST}
@@ -132,18 +145,19 @@ while read IP FQDN HOST SUBNET; do
 done < machines.txt
 ```
 
-Verify the hostname is set on each machine:
+Verify the short hostname is set on each machine. The Host Lookup Table steps below add the full names to `/etc/hosts`, including on AWS images that start without a `127.0.1.1` entry.
 
 ```bash
 while read IP FQDN HOST SUBNET; do
-  ssh -n root@${IP} hostname --fqdn
+  [ -n "$IP" ] || continue
+  ssh -n root@${IP} hostname --short
 done < machines.txt
 ```
 
 ```text
-server.kubernetes.local
-node-0.kubernetes.local
-node-1.kubernetes.local
+server
+node-0
+node-1
 ```
 
 ## Host Lookup Table
@@ -161,6 +175,7 @@ Generate a host entry for each machine in the `machines.txt` file and append it 
 
 ```bash
 while read IP FQDN HOST SUBNET; do
+    [ -n "$IP" ] || continue
     ENTRY="${IP} ${FQDN} ${HOST}"
     echo $ENTRY >> hosts
 done < machines.txt
@@ -233,6 +248,7 @@ Copy the `hosts` file to each machine and append the contents to `/etc/hosts`:
 
 ```bash
 while read IP FQDN HOST SUBNET; do
+  [ -n "$IP" ] || continue
   scp hosts root@${HOST}:~/
   ssh -n \
     root@${HOST} "cat hosts >> /etc/hosts"
@@ -240,5 +256,13 @@ done < machines.txt
 ```
 
 At this point, hostnames can be used when connecting to machines from your `jumpbox` machine, or any of the three machines in the Kubernetes cluster. Instead of using IP addresses you can now connect to machines using a hostname such as `server`, `node-0`, or `node-1`.
+
+From the jumpbox, verify that each node reports its full name:
+
+```bash
+for host in server node-0 node-1; do
+  ssh -n "root@$host" hostname --fqdn
+done
+```
 
 Next: [Provisioning a CA and Generating TLS Certificates](04-certificate-authority.md)

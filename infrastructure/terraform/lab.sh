@@ -54,7 +54,7 @@ workers=("${lab[@]:4}")
 ids=("${lab[@]:2}")
 
 aws_lab() {
-  aws --profile kthw-provisioner --region "$region" "$@"
+  aws --profile kthw-instance-access --region "$region" "$@"
 }
 
 actual=$(aws_lab sts get-caller-identity --query Account --output text)

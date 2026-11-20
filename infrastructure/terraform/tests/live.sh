@@ -12,7 +12,13 @@ tmp=$(mktemp -d)
 marker="kthw-recovery-$(date +%s)-$$"
 cleanup_marker=false
 restore_power=false
+close_web_tunnel() {
+  if [[ -S "$tmp/web-ssh" ]]; then
+    ssh -S "$tmp/web-ssh" -O exit "admin@$jumpbox" >/dev/null 2>&1 || true
+  fi
+}
 cleanup() {
+  close_web_tunnel
   if "$restore_power"; then
     ./lab.sh start || echo "Could not restore power after the recovery test." >&2
   fi
@@ -28,11 +34,13 @@ jumpbox=$(terraform output -raw jumpbox_instance_id)
 identity=${KTHW_SSH_KEY:-"$HOME/.ssh/kthw_ed25519"}
 tls_name=${KTHW_TLS_NAME:-kthw-ingress.local}
 [[ -n "$region" && -n "$jumpbox" && -r "$identity" ]]
+jump_ssh_options=(
+  -i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes
+  -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new
+  -o "ProxyCommand=aws --profile kthw-instance-access --region $region ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
+)
 jump_ssh() {
-  ssh -i "$identity" -o IdentitiesOnly=yes -o BatchMode=yes \
-    -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-    -o "ProxyCommand=aws --profile kthw-instance-access --region $region ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
-    "admin@$jumpbox" "$@"
+  ssh "${jump_ssh_options[@]}" "admin@$jumpbox" "$@"
 }
 
 snapshot() {
@@ -80,7 +88,7 @@ for table_id in (public, private):
 }
 
 check_services() {
-  local ip attempt
+  local attempt
   for ((attempt=1; attempt<=12; attempt++)); do
     if jump_ssh 'sudo systemctl is-active nftables haproxy amazon-ssm-agent'; then break; fi
     if (( attempt == 12 )); then return 1; fi
@@ -100,15 +108,18 @@ done
 kubectl wait --for=condition=Ready node/node-0 node/node-1 --timeout=180s
 REMOTE
 
-  ip=$(aws --profile kthw-provisioner --region "$region" ec2 describe-instances \
-    --instance-ids "$jumpbox" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
   jump_ssh 'sudo openssl x509 -in /etc/haproxy/tls/jumpbox.pem' > "$tmp/cert"
-  curl --noproxy '*' -fsS --retry 4 --max-time 10 --resolve "$tls_name:80:$ip" "http://$tls_name/" > "$tmp/http"
+  ssh "${jump_ssh_options[@]}" -a -fNM -S "$tmp/web-ssh" \
+    -o ControlPersist=no -o ExitOnForwardFailure=yes \
+    -L 127.0.0.1:18080:127.0.0.1:80 -L 127.0.0.1:18443:127.0.0.1:443 "admin@$jumpbox"
+  curl --noproxy '*' -fsS --retry 4 --max-time 10 \
+    --connect-to "$tls_name:80:127.0.0.1:18080" "http://$tls_name/" > "$tmp/http"
   curl --noproxy '*' -fsS --retry 4 --max-time 10 --cacert "${KTHW_TLS_CA:-$tmp/cert}" \
-    --resolve "$tls_name:443:$ip" "https://$tls_name/" > "$tmp/https"
+    --connect-to "$tls_name:443:127.0.0.1:18443" "https://$tls_name/" > "$tmp/https"
+  close_web_tunnel
   grep -q 'Welcome to nginx' "$tmp/http"
   grep -q 'Welcome to nginx' "$tmp/https"
-  echo "SSM SSH, private SSH, web egress, Kubernetes API and HTTP/HTTPS ingress passed."
+  echo "SSM SSH, private SSH, web egress, Kubernetes API and tunneled HTTP/HTTPS passed."
 }
 
 check_pods() {
