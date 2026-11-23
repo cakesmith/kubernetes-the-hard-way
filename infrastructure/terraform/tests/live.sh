@@ -23,7 +23,7 @@ cleanup() {
     ./lab.sh start || echo "Could not restore power after the recovery test." >&2
   fi
   if "$cleanup_marker"; then
-    jump_ssh "sudo kubectl delete configmap $marker --ignore-not-found" >/dev/null || true
+    jump_ssh "${kubectl_prefix}$lab_kubectl delete configmap $marker --ignore-not-found" </dev/null >/dev/null || true
   fi
   rm -rf "$tmp"
 }
@@ -41,6 +41,19 @@ jump_ssh_options=(
 )
 jump_ssh() {
   ssh "${jump_ssh_options[@]}" "admin@$jumpbox" "$@"
+}
+
+select_kubeconfig() {
+  if jump_ssh 'test -r "$HOME/.kube/config"' </dev/null; then
+    kubectl_prefix=''
+    lab_kubectl='/usr/local/bin/kubectl --kubeconfig="$HOME/.kube/config" --context=kubernetes-the-hard-way'
+  elif jump_ssh 'sudo -n test -r /root/.kube/config' </dev/null; then
+    kubectl_prefix='sudo -n '
+    lab_kubectl='/usr/local/bin/kubectl --kubeconfig=/root/.kube/config --context=kubernetes-the-hard-way'
+  else
+    echo 'No readable lab kubeconfig on the jumpbox. Sign in as admin and complete docs/10-configuring-kubectl.md to create ~/.kube/config.' >&2
+    return 1
+  fi
 }
 
 snapshot() {
@@ -94,18 +107,23 @@ check_services() {
     if (( attempt == 12 )); then return 1; fi
     sleep 10
   done
-  jump_ssh 'sudo bash -s' <<'REMOTE'
+  jump_ssh 'sudo -n bash -s' <<'REMOTE'
 set -euo pipefail
+# Keep each SSH client from reading commands from this script.
 for host in server node-0 node-1; do
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "root@$host" \
+  ssh -n -o BatchMode=yes -o ConnectTimeout=10 "root@$host" \
     'python3 -c "from urllib.request import urlopen; urlopen(\"https://deb.debian.org/debian/README\", timeout=15).read(1)"'
 done
+REMOTE
+  jump_ssh "${kubectl_prefix}bash -s -- $lab_kubectl" <<'REMOTE'
+set -euo pipefail
+kubectl=("$@")
 for ((attempt=1; attempt<=12; attempt++)); do
-  if kubectl --request-timeout=5s get --raw=/readyz; then break; fi
+  if "${kubectl[@]}" --request-timeout=5s get --raw=/readyz; then break; fi
   if (( attempt == 12 )); then exit 1; fi
   sleep 10
 done
-kubectl wait --for=condition=Ready node/node-0 node/node-1 --timeout=180s
+"${kubectl[@]}" wait --for=condition=Ready node/node-0 node/node-1 --timeout=180s
 REMOTE
 
   jump_ssh 'sudo openssl x509 -in /etc/haproxy/tls/jumpbox.pem' > "$tmp/cert"
@@ -123,30 +141,33 @@ REMOTE
 }
 
 check_pods() {
-  jump_ssh "sudo bash -s -- $marker" <<'REMOTE'
+  jump_ssh "${kubectl_prefix}bash -s -- $marker $lab_kubectl" <<'REMOTE'
 set -euo pipefail
 server="$1-server"
 client="$1-client"
-trap 'kubectl delete pod "$server" "$client" --ignore-not-found --wait=false' EXIT
-kubectl run "$server" --image=nginx:alpine --restart=Never \
+shift
+kubectl=("$@")
+trap '"${kubectl[@]}" delete pod "$server" "$client" --ignore-not-found --wait=false' EXIT
+"${kubectl[@]}" run "$server" --image=nginx:alpine --restart=Never \
   --overrides='{"spec":{"nodeName":"node-0"}}'
-kubectl run "$client" --image=busybox:1.37 --restart=Never \
+"${kubectl[@]}" run "$client" --image=busybox:1.37 --restart=Never \
   --overrides='{"spec":{"nodeName":"node-1"}}' --command -- sleep 300
-kubectl wait --for=condition=Ready "pod/$server" "pod/$client" --timeout=180s
-ip=$(kubectl get pod "$server" -o jsonpath='{.status.podIP}')
+"${kubectl[@]}" wait --for=condition=Ready "pod/$server" "pod/$client" --timeout=180s
+ip=$("${kubectl[@]}" get pod "$server" -o jsonpath='{.status.podIP}')
 [[ "$ip" == 10.200.0.* ]]
-kubectl exec "$client" -- wget -T 10 -qO /dev/null "http://$ip/"
-kubectl exec "$client" -- wget -T 10 -qO /dev/null 'http://deb.debian.org/debian/README'
+"${kubectl[@]}" exec "$client" -- wget -T 10 -qO /dev/null "http://$ip/"
+"${kubectl[@]}" exec "$client" -- wget -T 10 -qO /dev/null 'http://deb.debian.org/debian/README'
 REMOTE
   echo "Cross-worker pod traffic and pod web egress passed."
 }
 
 snapshot running > "$tmp/before"
 check_routes
+select_kubeconfig
 check_services
 check_pods
 if "$recovery"; then
-  uid=$(jump_ssh "sudo kubectl create configmap $marker --from-literal=check=survives -o jsonpath='{.metadata.uid}'")
+  uid=$(jump_ssh "${kubectl_prefix}$lab_kubectl create configmap $marker --from-literal=check=survives -o jsonpath='{.metadata.uid}'" </dev/null)
   cleanup_marker=true
   restore_power=true
   ./lab.sh stop
@@ -160,7 +181,7 @@ if "$recovery"; then
   check_routes
   check_services
   check_pods
-  [[ "$uid" == "$(jump_ssh "sudo kubectl get configmap $marker -o jsonpath='{.metadata.uid}'")" ]]
+  [[ "$uid" == "$(jump_ssh "${kubectl_prefix}$lab_kubectl get configmap $marker -o jsonpath='{.metadata.uid}'" </dev/null)" ]]
   terraform plan -detailed-exitcode -input=false
   echo "Stop/start retained instance IDs, ENIs, addresses, EBS volumes and the etcd object with no Terraform plan changes."
 fi

@@ -30,6 +30,7 @@ Terraform provisions a public jumpbox and three private Kubernetes machines. Fol
 
 | Command | What it does |
 | --- | --- |
+| `make aws-profiles` | Generates the [shared AWS role profiles](infrastructure/terraform/README.md#2-set-up-the-project-roles-and-state-bucket) after you have a member account. |
 | `make up` | Provisions or updates the AWS lab and starts the instances. Continue with the manual Kubernetes installation below. |
 | `make status` | Shows instance states, private IPs, and the current jumpbox public IP. |
 | `make web-tunnel` | Forwards local HTTP and HTTPS to the jumpbox over SSM-backed SSH. Defaults to `80:80 443:443`. |

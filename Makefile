@@ -1,6 +1,15 @@
-.PHONY: help up start stop status destroy web-tunnel kube-tunnel validate validate-live validate-recovery
+.PHONY: help aws-profiles up start stop status destroy web-tunnel kube-tunnel argocd-ui validate validate-live validate-recovery
 
 LAB := infrastructure/terraform
+PROJECT_AWS_CONFIG := $(abspath $(LAB)/project.awsconfig)
+ifeq ($(origin AWS_CONFIG_FILE),undefined)
+ifneq ($(wildcard $(PROJECT_AWS_CONFIG)),)
+export AWS_CONFIG_FILE := $(PROJECT_AWS_CONFIG)
+endif
+endif
+
+export PROJECT_ACCOUNT_ID
+export ADMIN_PROFILE ?= default
 # Each web forward is a LOCAL_PORT:JUMPBOX_PORT pair.
 export TUNNEL_PORTS ?= 80:80 443:443
 .DEFAULT_GOAL := help
@@ -9,6 +18,7 @@ help:
 	@printf '%s\n' \
 		'Usage: make [target]' \
 		'' \
+		'  aws-profiles       Generate the local AWS role profiles' \
 		'  help               Show this list' \
 		'  up                 Provision or update and start the AWS lab' \
 		'  start              Start the lab instances' \
@@ -17,9 +27,13 @@ help:
 		'  destroy            Delete the lab infrastructure and root disks' \
 		'  web-tunnel         Forward web ingress (default: 80:80 443:443)' \
 		'  kube-tunnel        Set up kubeconfig and forward the Kubernetes API' \
+		'  argocd-ui          Forward the Argo CD UI to localhost:8443 (requires kube-tunnel)' \
 		'  validate           Run Terraform checks and mocked lifecycle tests' \
 		'  validate-live      Check connectivity and ingress on the running lab' \
 		'  validate-recovery  Stop and restart the lab to verify recovery'
+
+aws-profiles:
+	@bash $(LAB)/aws-profiles.sh "$$PROJECT_ACCOUNT_ID" "$$ADMIN_PROFILE"
 
 # Delegate AWS lifecycle operations to the lab script.
 up start stop status:
@@ -49,6 +63,11 @@ web-tunnel:
 # Keep workstation kubeconfig setup with the API tunnel it uses.
 kube-tunnel:
 	@bash $(LAB)/kube-tunnel.sh
+
+argocd-ui:
+	@printf '%s\n' 'Keep make kube-tunnel running in another terminal.' \
+		'Once forwarding starts, open https://localhost:8443.'
+	@kubectl --kubeconfig="$$HOME/.kube/kthw-aws.yaml" -n argocd port-forward svc/argocd-server 8443:443
 
 # Start with local checks before running the tests that use AWS.
 validate:

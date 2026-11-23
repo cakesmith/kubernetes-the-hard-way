@@ -59,28 +59,22 @@ The account has Terraform's `prevent_destroy` protection. Organizations creates 
 
 ## 2. Set up the project roles and state bucket
 
-Add these profiles to the same AWS config. Replace every `PROJECT_ACCOUNT_ID` with the account ID from step 1.
+Generate the shared profiles from the account ID in the local `project-account` Terraform state. From the repository root, run the following, substituting the profile you already use to sign in to the management account. `ADMIN_PROFILE` defaults to `default`.
 
-```ini
-[profile kthw-bootstrap]
-role_arn = arn:aws:iam::PROJECT_ACCOUNT_ID:role/OrganizationAccountAccessRole
-source_profile = kthw-management
-
-[profile kthw-provisioner]
-role_arn = arn:aws:iam::PROJECT_ACCOUNT_ID:role/kubernetes-hard-way-provisioner
-source_profile = kthw-management
-
-[profile kthw-instance-access]
-role_arn = arn:aws:iam::PROJECT_ACCOUNT_ID:role/kubernetes-hard-way-instance-access
-source_profile = kthw-management
+```sh
+make aws-profiles ADMIN_PROFILE=default
+export AWS_CONFIG_FILE="$PWD/infrastructure/terraform/project.awsconfig"
+cd infrastructure/terraform
 ```
 
-| Profile | Use |
-| --- | --- |
-| `kthw-management` | Create the member account in AWS Organizations. |
-| `kthw-bootstrap` | Administer the member account and create the bucket and project roles. |
-| `kthw-provisioner` | Read and write lab state and manage Terraform resources, including creating and terminating EC2 instances. |
-| `kthw-instance-access` | Start and stop tagged lab instances, check EC2 status, and open a Session Manager SSH tunnel to the jumpbox. |
+For a checkout without the local account state, pass `PROJECT_ACCOUNT_ID=YOUR_MEMBER_ACCOUNT_ID` to `make aws-profiles`. The target writes the ignored `project.awsconfig` using the base login from your normal AWS config. Rerunning it with the same generated configuration is safe, and it preserves an existing file with different contents. It makes no AWS API calls. When you haven't set `AWS_CONFIG_FILE`, Make selects this file automatically if it exists. For direct AWS CLI and Terraform commands, run the export above in each terminal that needs the profiles. You can also define the profiles in your normal AWS config if you prefer to manage them there.
+
+| Profile | Member account role | Use |
+| --- | --- | --- |
+| `kthw-management` | | Use your existing management login to create the member account and assume the other roles. |
+| `kthw-bootstrap` | `OrganizationAccountAccessRole` | Create the state bucket and project roles with the `state-bucket` Terraform configuration. |
+| `kthw-provisioner` | `kubernetes-hard-way-provisioner` | Read and write lab state and manage Terraform resources, including creating and terminating EC2 instances. |
+| `kthw-instance-access` | `kubernetes-hard-way-instance-access` | Start and stop tagged lab instances, check EC2 status, and open a Session Manager SSH tunnel to the jumpbox. |
 
 Create `state-bucket/account.auto.tfvars` with the same member account ID, a globally unique S3 bucket name, and your management IAM principal ARN. Use the IAM ARN beginning with `arn:aws:iam::`. If `get-caller-identity` showed an assumed-role session ARN, use the underlying IAM role ARN, including its path if it has one.
 
@@ -90,7 +84,7 @@ bucket_name           = "kubernetes-hard-way-PROJECT_ACCOUNT_ID-tfstate"
 trusted_principal_arn = "YOUR_MANAGEMENT_IAM_PRINCIPAL_ARN"
 ```
 
-The trusted principal also needs permission to assume the cross-account roles. Verify that `kthw-bootstrap` resolves to the member account, then review and apply the bootstrap plan. If the account was just created, allow a short time for its bootstrap role to become available.
+The bootstrap Terraform configuration gives both operational roles a trust policy for `trusted_principal_arn`. The management principal also needs an identity policy allowing `sts:AssumeRole` on the member account roles it uses. Verify that `kthw-bootstrap` resolves to the member account, then review and apply the bootstrap plan. If the account was just created, allow a short time for its bootstrap role to become available.
 
 ```sh
 aws --profile kthw-bootstrap sts get-caller-identity
@@ -98,7 +92,11 @@ AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket init
 AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket plan -out=tfplan
 AWS_PROFILE=kthw-bootstrap terraform -chdir=state-bucket apply tfplan
 terraform -chdir=state-bucket output -raw backend_config > lab.s3.tfbackend
+aws --profile kthw-provisioner sts get-caller-identity
+aws --profile kthw-instance-access sts get-caller-identity
 ```
+
+Both operational identity checks should return the member account and the corresponding assumed-role ARN. If a profile is missing, check which config file the command has selected and run `aws configure list-profiles`. If STS returns `AccessDenied`, check both the role trust policy and the management principal's permission to assume it.
 
 This creates a private, encrypted, versioned bucket with S3 lock files enabled in the lab backend. The bucket policy denies direct object access to principals other than the provisioner. The bootstrap administrator can edit the policy for recovery. The provisioner manages the lab's EC2 and VPC resources in the configured region. Keep routine access in the project account limited to the roles intended for it.
 
@@ -133,13 +131,13 @@ The lab configuration creates an account-wide $50 monthly AWS cost budget with a
 
 Allow time for cloud-init to install SSM Agent, nftables and HAProxy. Run the following commands from the repository root on your workstation.
 
-If your lab profiles are in `infrastructure/terraform/project.awsconfig`, select that file in the terminal you will use to connect. Run the export again in each new terminal that needs those profiles. If Terraform reports `failed to get shared config profile, kthw-provisioner`, check that your terminal is using the AWS config file that defines that profile.
+If you use `project.awsconfig`, select it for the direct AWS CLI and Terraform commands below.
 
 ```sh
 export AWS_CONFIG_FILE="$PWD/infrastructure/terraform/project.awsconfig"
 ```
 
-Connect as Debian's `admin` user through Session Manager.
+Connect as Debian's `admin` user through Session Manager. The instance-access role opens the SSH transport, and the SSH key authenticates the login. For Kubernetes API access, [configure the workstation kubeconfig and tunnel](../../docs/10-configuring-kubectl.md#aws-workstation-access). The kubeconfig uses the tutorial's Kubernetes admin client certificate and key.
 
 ```sh
 region=$(terraform -chdir=infrastructure/terraform output -raw lab_region) &&
@@ -216,7 +214,7 @@ The original deployment is recorded here for maintainers. Use these values only 
 | State bucket | `kubernetes-hard-way-476564946996-tfstate` in `us-east-1` |
 | S3 lock object | `kubernetes-hard-way/terraform.tfstate.tflock` |
 
-On November 19, 2026, Terraform 1.10.5 and AWS provider 5.100.0 created the member account, bucket, and roles. The original checkout used a standalone, ignored `project.awsconfig` with the four profiles above. Its credential helper was `env -u AWS_CONFIG_FILE aws --profile default configure export-credentials --format process`, which lets the CLI find `default` in the normal config. If you have that file, select it with `export AWS_CONFIG_FILE="$PWD/project.awsconfig"`. New users can put their profiles in the normal AWS config as shown in steps 1 and 2.
+On November 19, 2026, Terraform 1.10.5 and AWS provider 5.100.0 created the member account, bucket, and roles. The original checkout used a standalone, ignored `project.awsconfig` with the four profiles above. If you have that file, Make selects it automatically when `AWS_CONFIG_FILE` is unset. From the repository root, select it for direct commands with `export AWS_CONFIG_FILE="$PWD/infrastructure/terraform/project.awsconfig"`.
 
 The bootstrap verified both project role sessions and initialized the S3 backend. A read-only attempt by the SSH role to list the bucket returned `AccessDenied`. A plan using a temporary public key showed 14 lab resources. That plan was never applied, so the bootstrap did not verify SSH to a running instance.
 

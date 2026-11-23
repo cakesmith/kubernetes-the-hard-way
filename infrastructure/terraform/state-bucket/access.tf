@@ -13,8 +13,6 @@ data "aws_partition" "current" {}
 
 locals {
   partition     = data.aws_partition.current.partition
-  state_key     = "kubernetes-hard-way/terraform.tfstate"
-  state_objects = [for suffix in ["", ".tflock"] : "${aws_s3_bucket.state.arn}/${local.state_key}${suffix}"]
   lab_ec2_arn   = "arn:${local.partition}:ec2:${var.lab_region}:${var.project_account_id}"
   lab_ssm_arn   = "arn:${local.partition}:ssm:${var.lab_region}:${var.project_account_id}"
   access_tags   = { Name = "kubernetes-hard-way-instance-access", ResourceType = "iam-role" }
@@ -43,20 +41,18 @@ resource "aws_iam_role_policy" "provisioner" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # Terraform state and lock files in the shared bucket.
       {
+        Sid      = "ListStateBucket"
         Effect   = "Allow"
-        Action   = ["s3:ListBucket"]
+        Action   = "s3:ListBucket"
         Resource = aws_s3_bucket.state.arn
       },
       {
+        Sid      = "ManageStateBucketObjects"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = local.state_objects
-      },
-      {
-        Effect   = "Allow"
-        Action   = "s3:DeleteObject"
-        Resource = local.state_objects[1]
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = "${aws_s3_bucket.state.arn}/*"
       },
       {
         Sid    = "ManageLabInDedicatedAccount"
