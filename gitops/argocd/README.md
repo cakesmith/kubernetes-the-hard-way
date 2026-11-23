@@ -6,12 +6,24 @@ Actions publishes the API image and updates the lab values file in Git.
 
 ## Bootstrap
 
-1. Open `make kube-tunnel` in a separate terminal and select the lab kubeconfig.
-   Install CoreDNS at Service IP `10.0.0.10` and configure both worker kubelets
-   with that cluster DNS address and the domain `cluster.local`. The API serving
-   certificate must cover the actual `kubernetes` Service IP, `10.0.0.1` in
-   this lab. Test DNS and HTTPS from fresh pods on both workers before installing
-   Argo CD.
+1. Open `make kube-tunnel` in a separate terminal. The API serving certificate
+   must cover the `kubernetes` Service IP, `10.0.0.1` in this lab.
+   [Install CoreDNS](scripts/install-core-dns.sh), then
+   [configure the worker kubelets](scripts/configure-worker-dns.sh).
+
+   ```bash
+   export KUBECONFIG="$HOME/.kube/kthw-aws.yaml"
+   gitops/argocd/scripts/install-core-dns.sh
+   gitops/argocd/scripts/configure-worker-dns.sh
+   ```
+
+   Both scripts default to `~/.kube/kthw-aws.yaml` when `KUBECONFIG` is unset
+   or empty. CoreDNS uses the `kube-system/kube-dns` Service at `10.0.0.10`.
+   The worker script requires a ready DNS endpoint and uses the `node-0` and
+   `node-1` SSH aliases with passwordless sudo. It configures `cluster.local`,
+   backs up any changed kubelet config, and restarts and verifies each changed
+   kubelet before moving to the next worker. Test DNS and HTTPS from fresh pods
+   on both workers before installing Argo CD.
 2. Install the pinned non-HA Argo CD release. Keep the UI on its ClusterIP
    Service and use a local port forward.
 
