@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: house-price
+  namespace: argocd
+spec:
+  project: house-price
+  source:
+    repoURL: https://github.com/cakesmith/house-price-predictor.git
+    targetRevision: refs/heads/main
+    path: deployment/kubernetes/house-price-model
+    helm:
+      releaseName: house-price
+      valueFiles:
+        - values-kthw-lab.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: house-price
+  syncPolicy:
+    automated:
+      enabled: true
+      prune: false
+      selfHeal: true
